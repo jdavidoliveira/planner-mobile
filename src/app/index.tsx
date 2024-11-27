@@ -1,30 +1,181 @@
-import { Input } from "@/components/input"
-import { View, Text, Image } from "react-native"
+import { useEffect, useState } from "react"
+import { Alert, Image, Keyboard, Text, View } from "react-native"
+import { DateData } from "react-native-calendars"
+import { Href, router } from "expo-router"
 import {
-  MapPin,
+  ArrowRight,
+  AtSign,
   Calendar as IconCalendar,
+  MapPin,
   Settings2,
   UserRoundPlus,
-  ArrowRight,
 } from "lucide-react-native"
-import { colors } from "@/styles/colors"
+import dayjs from "dayjs"
+
 import { Button } from "@/components/button"
-import { useState } from "react"
+import { Calendar } from "@/components/calendar"
+import { GuestEmail } from "@/components/email"
+import { Input } from "@/components/input"
+import { Modal } from "@/components/modal"
+
+import { colors } from "@/styles/colors"
+import { calendarUtils, DatesSelected } from "@/utils/calendarUtils"
+import { validateInput } from "@/utils/validateInput"
+import { tripStorage } from "@/storage/trip"
+import { tripServer } from "@/server/trip-server"
+import { Loading } from "@/components/loading"
 
 enum StepForm {
   TRIP_DETAILS = 1,
   ADD_EMAIL = 2,
 }
 
+enum MODAL {
+  NONE = 0,
+  CALENDAR = 1,
+  GUESTS = 2,
+}
+
 export default function Index() {
+  const [selectedDates, setSelectedDates] = useState({} as DatesSelected)
   const [stepForm, setStepForm] = useState<StepForm>(StepForm.TRIP_DETAILS)
+  const [showModal, setShowModal] = useState(MODAL.NONE)
+  const [destination, setDestination] = useState("")
+  const [emailToInvite, setEmailToInvite] = useState("")
+  const [emailsToInvite, setEmailsToInvite] = useState<string[]>([])
+  //loading
+  const [isCreatingTrip, setIsCreatingTrip] = useState(false)
+  const [isGettingTrip, setIsGettingTrip] = useState(true)
 
   function handleNextStepForm() {
+    if (
+      destination.trim().length === 0 ||
+      !selectedDates.startsAt ||
+      !selectedDates.endsAt
+    ) {
+      return Alert.alert(
+        "Detalhes da viagem",
+        "Preencha todas as informações da viagem para seguir."
+      )
+    }
+
+    if (destination.length < 4) {
+      return Alert.alert(
+        "Detalhes da viagem",
+        "O destino deve ter pelo menos 4 caracteres."
+      )
+    }
+
     if (stepForm === StepForm.TRIP_DETAILS) {
       return setStepForm(StepForm.ADD_EMAIL)
     }
+
+    Alert.alert("Nova viagem", "Confirmar viagem?", [
+      { text: "Não", style: "cancel" },
+      {
+        text: "Sim",
+        onPress: createTrip,
+      },
+    ])
   }
 
+  function handleSelectDate(selectedDay: DateData) {
+    const dates = calendarUtils.orderStartsAtAndEndsAt({
+      startsAt: selectedDates.startsAt,
+      endsAt: selectedDates.endsAt,
+      selectedDay,
+    })
+
+    setSelectedDates(dates)
+  }
+
+  function handleRemoveEmail(emailToRemove: string) {
+    setEmailsToInvite((prev) => prev.filter((email) => email !== emailToRemove))
+  }
+
+  function handleAddEmail() {
+    if (!validateInput.email(emailToInvite)) {
+      return Alert.alert("Convidado", "E-mail inválido.")
+    }
+
+    const emailAlreadyExists = emailsToInvite.find(
+      (email) => email === emailToInvite
+    )
+
+    if (emailAlreadyExists) {
+      return Alert.alert("Convidado", "Este e-mail já foi adicionado!")
+    }
+
+    setEmailsToInvite((prev) => [...prev, emailToInvite])
+    setEmailToInvite("")
+  }
+
+  async function saveTrip(tripId: string) {
+    try {
+      await tripStorage.save(tripId)
+      router.navigate(`/trip/${tripId}` as Href)
+    } catch (error) {
+      Alert.alert(
+        "Salvar viagem",
+        "Não foi possível salvar o id da viagem no dispositivo."
+      )
+      console.log(error)
+    }
+  }
+
+  async function createTrip() {
+    try {
+      setIsCreatingTrip(true)
+
+      const newTrip = await tripServer.create({
+        destination,
+        starts_at: dayjs(selectedDates.startsAt?.dateString).toString(),
+        ends_at: dayjs(selectedDates.endsAt?.dateString).toString(),
+        emails_to_invite: emailsToInvite,
+        owner_name: "JDavid",
+        owner_email: "JDavid@example.com",
+      })
+
+      Alert.alert("Nova viagem", "Viagem criada com sucesso!", [
+        {
+          text: "Ok. Continuar.",
+          onPress: () => saveTrip(newTrip.tripId),
+        },
+      ])
+    } catch (error) {
+      console.log(error)
+    } finally {
+      setIsCreatingTrip(false)
+    }
+  }
+
+  async function getTrip() {
+    try {
+      const tripId = await tripStorage.get()
+
+      if (!tripId) {
+        return setIsGettingTrip(false)
+      }
+
+      const trip = await tripServer.getById(tripId)
+      console.log(trip)
+
+      if (trip) {
+        return router.navigate(`/trip/${trip.id}` as Href)
+      }
+    } catch (error) {
+      setIsGettingTrip(false)
+      console.log(error)
+    }
+  }
+
+  useEffect(() => {
+    getTrip()
+  }, [])
+
+  if (isGettingTrip) {
+    return <Loading />
+  }
   return (
     <View className="flex-1 items-center justify-center px-5">
       <Image
@@ -42,6 +193,8 @@ export default function Index() {
           <MapPin color={colors.zinc[400]} size={20} />
           <Input.Field
             placeholder="Para onde?"
+            onChangeText={setDestination}
+            value={destination}
             editable={stepForm === StepForm.TRIP_DETAILS}
           ></Input.Field>
         </Input>
@@ -50,6 +203,12 @@ export default function Index() {
           <Input.Field
             placeholder="Quando?"
             editable={stepForm === StepForm.TRIP_DETAILS}
+            onFocus={() => Keyboard.dismiss()}
+            showSoftInputOnFocus={false}
+            onPressIn={() =>
+              stepForm === StepForm.TRIP_DETAILS && setShowModal(MODAL.CALENDAR)
+            }
+            value={selectedDates.formatDatesInText}
           ></Input.Field>
         </Input>
 
@@ -66,12 +225,25 @@ export default function Index() {
             </View>
             <Input>
               <UserRoundPlus color={colors.zinc[400]} size={20} />
-              <Input.Field placeholder="Quem estará na viagem?"></Input.Field>
+              <Input.Field
+                placeholder="Quem estará na viagem?"
+                autoCorrect={false}
+                value={
+                  emailsToInvite.length > 0
+                    ? `${emailsToInvite.length} pessoas(a) convidada(as)`
+                    : ""
+                }
+                onPress={() => {
+                  Keyboard.dismiss()
+                  setShowModal(MODAL.GUESTS)
+                }}
+                showSoftInputOnFocus={false}
+              ></Input.Field>
             </Input>
           </>
         )}
 
-        <Button onPress={handleNextStepForm}>
+        <Button onPress={handleNextStepForm} isLoading={isCreatingTrip}>
           <Button.Title>
             {stepForm === StepForm.TRIP_DETAILS
               ? "Continuar"
@@ -88,6 +260,66 @@ export default function Index() {
           termos de uso e políticas de privacidade.
         </Text>
       </Text>
+
+      <Modal
+        title="Selecionar datas"
+        subtitle="Selecione a data de ida e volta da viagem"
+        visible={showModal === MODAL.CALENDAR}
+        onClose={() => setShowModal(MODAL.NONE)}
+      >
+        <View className="gap-4 mt-4">
+          <Calendar
+            minDate={dayjs().toISOString()}
+            onDayPress={handleSelectDate}
+            markedDates={selectedDates.dates}
+          />
+
+          <Button onPress={() => setShowModal(MODAL.NONE)}>
+            <Button.Title>Confirmar</Button.Title>
+          </Button>
+        </View>
+      </Modal>
+
+      <Modal
+        title="Selecionar convidados"
+        subtitle="Os convidados irão receber e-mails para confirmar a participação na viagem."
+        visible={showModal === MODAL.GUESTS}
+        onClose={() => setShowModal(MODAL.NONE)}
+      >
+        <View className="my-2 flex-wrap gap-2 border-b border-zinc-800 py-5 items-start">
+          {emailsToInvite.length > 0 ? (
+            emailsToInvite.map((email) => (
+              <GuestEmail
+                key={email}
+                email={email}
+                onRemove={() => handleRemoveEmail(email)}
+              />
+            ))
+          ) : (
+            <Text className="text-zinc-600 text-base font-regular">
+              Nenhum e-mail adicionado.
+            </Text>
+          )}
+        </View>
+
+        <View className="gap-4 mt-4">
+          <Input variant="secondary">
+            <AtSign color={colors.zinc[400]} size={20} />
+            <Input.Field
+              placeholder="E-mail do convidado"
+              keyboardType="email-address"
+              onChangeText={(text) => setEmailToInvite(text.toLowerCase())}
+              value={emailToInvite}
+              returnKeyType="send"
+              onSubmitEditing={handleAddEmail}
+            ></Input.Field>
+          </Input>
+
+          <Button onPress={handleAddEmail}>
+            <Button.Title>Convidar</Button.Title>
+          </Button>
+        </View>
+      </Modal>
     </View>
   )
 }

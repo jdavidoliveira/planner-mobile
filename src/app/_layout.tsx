@@ -2,6 +2,7 @@ import "@/styles/global.css"
 
 import { View, StatusBar } from "react-native"
 import { Slot } from "expo-router"
+import "@/utils/dayjsLocaleConfig"
 
 import {
   useFonts,
